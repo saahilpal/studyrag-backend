@@ -1,0 +1,26 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Firebase service account
+serviceAccount.json
+*.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# SQLite database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads (PDF storage)
+uploads/
