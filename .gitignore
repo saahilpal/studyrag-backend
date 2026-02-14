@@ -1,26 +1,15 @@
-# Node modules
 node_modules/
-
-# Environment variables
 .env
-
-# Firebase service account
-serviceAccount.json
-*.json
-
-# Logs
 logs/
-*.log
-npm-debug.log*
+uploads/tmp/
+data/
+data/uploads/tmp/
+dist/
 
-# OS files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
 .DS_Store
 Thumbs.db
-
-# SQLite database
-*.db
-*.sqlite
-*.sqlite3
-
-# Uploads (PDF storage)
-uploads/
