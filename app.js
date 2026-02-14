@@ -9,6 +9,9 @@ require('./db/database');
 const apiV1Route = require('./routes/apiV1');
 const legacyRoute = require('./routes/legacy');
 const rateLimiter = require('./middleware/rateLimiter');
+const { ok, fail } = require('./routes/helpers');
+const { normalizeHttpError } = require('./utils/errors');
+const { logError } = require('./utils/logger');
 
 const app = express();
 
@@ -33,18 +36,20 @@ app.use(cors({
     if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
-    return callback(new Error('CORS origin not allowed.'));
+    const error = new Error('CORS origin not allowed.');
+    error.statusCode = 403;
+    return callback(error);
   },
 }));
 app.use(morgan('dev'));
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/', (req, res) => {
-  res.status(200).json({ message: 'StudyRAG backend running' });
+  return ok(res, { message: 'StudyRAG backend running' });
 });
 
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', service: 'StudyRAG Backend' });
+  return ok(res, { status: 'ok', service: 'StudyRAG Backend' });
 });
 
 // Authentication has been intentionally removed in this phase to support a local-first academic deployment.
@@ -59,11 +64,49 @@ app.use((err, req, res, next) => {
     return next(err);
   }
 
-  const status = err.statusCode === 400 ? 400 : (err.statusCode === 429 ? 429 : 500);
-  return res.status(status).json({
-    error: status === 500 ? 'Internal Server Error' : 'Request Error',
-    message: err.message || 'Something went wrong.',
-  });
+  if (err?.name === 'MulterError') {
+    logError('ERROR_UPLOAD', err, {
+      route: req.originalUrl,
+      method: req.method,
+    });
+    return fail(
+      res,
+      err.code === 'LIMIT_FILE_SIZE'
+        ? 'Uploaded file exceeds configured size limit.'
+        : 'Upload failed.',
+      400
+    );
+  }
+
+  if (err?.type === 'entity.parse.failed') {
+    return fail(res, 'Invalid JSON body.', 400);
+  }
+
+  if (err?.type === 'entity.too.large') {
+    return fail(res, 'Request payload too large.', 413);
+  }
+
+  const isSqliteError = String(err?.code || '').startsWith('SQLITE');
+  if (isSqliteError) {
+    logError('ERROR_DB', err, {
+      route: req.originalUrl,
+      method: req.method,
+    });
+  }
+
+  const normalized = normalizeHttpError(err);
+  if (normalized.status === 500 && !isSqliteError) {
+    logError('ERROR_DB', err, {
+      route: req.originalUrl,
+      method: req.method,
+      status: normalized.status,
+    });
+  }
+  return fail(res, normalized.message, normalized.status);
+});
+
+app.use((req, res) => {
+  return fail(res, 'Not found.', 404);
 });
 
 module.exports = app;
