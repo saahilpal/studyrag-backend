@@ -1,5 +1,6 @@
 const path = require('path');
 const db = require('../db/database');
+const { invalidatePdfCache } = require('./vectorService');
 
 const insertPdfStmt = db.prepare(`
   INSERT INTO pdfs (sessionId, title, filename, path, type, status, indexedChunks, createdAt)
@@ -26,6 +27,31 @@ const updatePdfStatusStmt = db.prepare(`
   WHERE id = @id
 `);
 
+const updatePdfStorageStmt = db.prepare(`
+  UPDATE pdfs
+  SET filename = @filename,
+      path = @path
+  WHERE id = @id
+`);
+
+const countIndexedPdfsBySessionStmt = db.prepare(`
+  SELECT COUNT(*) AS count
+  FROM pdfs
+  WHERE sessionId = ? AND status = 'indexed' AND indexedChunks > 0
+`);
+
+const countPdfsBySessionStmt = db.prepare(`
+  SELECT COUNT(*) AS count
+  FROM pdfs
+  WHERE sessionId = ?
+`);
+
+const countPdfsBySessionAndStatusStmt = db.prepare(`
+  SELECT COUNT(*) AS count
+  FROM pdfs
+  WHERE sessionId = ? AND status = ?
+`);
+
 const deletePdfStmt = db.prepare(`
   DELETE FROM pdfs
   WHERE id = ?
@@ -36,7 +62,7 @@ const deleteChunksByPdfStmt = db.prepare(`
   WHERE pdfId = ?
 `);
 
-function createPdfRecord({ sessionId, title, filename, storagePath, type = 'pdf' }) {
+function createPdfRecord({ sessionId, title, filename = '', storagePath = '', type = 'pdf' }) {
   const createdAt = new Date().toISOString();
   const normalizedTitle = title ? title.trim() : path.basename(filename, path.extname(filename));
 
@@ -62,6 +88,15 @@ function listPdfsBySession(sessionId) {
   return listPdfsBySessionStmt.all(sessionId);
 }
 
+function updatePdfStorage(pdfId, { filename, storagePath }) {
+  updatePdfStorageStmt.run({
+    id: pdfId,
+    filename,
+    path: storagePath,
+  });
+  return getPdfById(pdfId);
+}
+
 function assertPdfExists(pdfId) {
   const pdf = getPdfById(pdfId);
   if (!pdf) {
@@ -83,6 +118,7 @@ function markPdfFailed(pdfId) {
 function deletePdfRecord(pdfId) {
   assertPdfExists(pdfId);
   const remove = db.transaction((id) => {
+    invalidatePdfCache(id);
     deleteChunksByPdfStmt.run(id);
     deletePdfStmt.run(id);
   });
@@ -90,12 +126,33 @@ function deletePdfRecord(pdfId) {
   return { deleted: true, id: pdfId };
 }
 
+function getIndexedPdfCountBySession(sessionId) {
+  return countIndexedPdfsBySessionStmt.get(sessionId).count;
+}
+
+function getPdfReadinessBySession(sessionId) {
+  const uploaded = countPdfsBySessionStmt.get(sessionId).count;
+  const indexed = getIndexedPdfCountBySession(sessionId);
+  const processing = countPdfsBySessionAndStatusStmt.get(sessionId, 'processing').count;
+  const failed = countPdfsBySessionAndStatusStmt.get(sessionId, 'failed').count;
+
+  return {
+    uploaded,
+    indexed,
+    processing,
+    failed,
+  };
+}
+
 module.exports = {
   createPdfRecord,
+  updatePdfStorage,
   getPdfById,
   listPdfsBySession,
   assertPdfExists,
   markPdfIndexed,
   markPdfFailed,
   deletePdfRecord,
+  getIndexedPdfCountBySession,
+  getPdfReadinessBySession,
 };
