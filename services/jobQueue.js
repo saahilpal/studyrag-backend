@@ -149,13 +149,16 @@ function getQueueState() {
 
 function addJob(payload) {
   const jobId = createJobId();
+  const normalizedMaxRetries = Number.isInteger(payload.maxRetries) && payload.maxRetries >= 0
+    ? payload.maxRetries
+    : 3;
   const job = {
     id: jobId,
     type: payload.type,
     payload,
     status: 'queued',
     attempts: 0,
-    maxRetries: payload.maxRetries || 3,
+    maxRetries: normalizedMaxRetries,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     result: null,
