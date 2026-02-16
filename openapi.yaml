@@ -1,0 +1,175 @@
+openapi: 3.0.3
+info:
+  title: Chat-First PDF Analyzer API
+  version: 1.0.0
+servers:
+  - url: http://localhost:4000
+paths:
+  /api/v1/health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /api/v1/ping:
+    get:
+      summary: Ping
+      responses:
+        '200':
+          description: Pong
+  /api/v1/sessions:
+    get:
+      summary: List sessions
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+      responses:
+        '200': { description: Created }
+  /api/v1/sessions/{sessionId}:
+    get:
+      summary: Get session details
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: OK }
+    delete:
+      summary: Delete session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Deleted }
+  /api/v1/sessions/{sessionId}/pdfs:
+    get:
+      summary: List PDFs by session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Upload PDF for session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+      responses:
+        '202': { description: Accepted }
+  /api/v1/pdfs/{pdfId}:
+    get:
+      summary: Get PDF metadata
+      parameters:
+        - in: path
+          name: pdfId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: OK }
+    delete:
+      summary: Delete PDF metadata and optionally file
+      parameters:
+        - in: path
+          name: pdfId
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: removeFile
+          schema: { type: boolean }
+      responses:
+        '200': { description: Deleted }
+  /api/v1/sessions/{sessionId}/chat:
+    post:
+      summary: Chat query against indexed PDFs
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                history:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum: [user, assistant]
+                      text:
+                        type: string
+      responses:
+        '200': { description: Chat answer }
+        '202': { description: Async job accepted }
+  /api/v1/sessions/{sessionId}/history:
+    get:
+      summary: Get chat history
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: OK }
+    delete:
+      summary: Clear chat history
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Cleared }
+  /api/v1/jobs/{jobId}:
+    get:
+      summary: Poll async job status
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: OK }
+  /api/v1/admin/queue:
+    get:
+      summary: Queue status and metrics (dev)
+      responses:
+        '200': { description: OK }
