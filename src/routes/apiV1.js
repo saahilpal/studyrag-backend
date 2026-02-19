@@ -31,14 +31,14 @@ const {
   getQueueState,
   getQueuePosition,
 } = require('../services/jobQueue');
-const { runChatQuery, shouldRunAsyncChat } = require('../services/ragService');
+const { runChatQuery, runChatQueryStream, shouldRunAsyncChat } = require('../services/ragService');
 const { addConversation, listSessionHistory, clearSessionHistory } = require('../services/chatHistoryService');
 const { getMetrics, recordQuery } = require('../services/metricsService');
 const rateLimiter = require('../middleware/rateLimiter');
 const validateSchema = require('../middleware/validate');
 const { ok, fail } = require('./helpers');
 const asyncHandler = require('../utils/asyncHandler');
-const { createHttpError } = require('../utils/errors');
+const { createHttpError, normalizeHttpError } = require('../utils/errors');
 const { logInfo, logError } = require('../utils/logger');
 
 const router = express.Router();
@@ -131,6 +131,28 @@ function normalizeOptionalTitle(title, fallback) {
     return normalized;
   }
   return sanitizeFilename(fallback || 'uploaded.pdf').replace(/\.pdf$/i, '');
+}
+
+function shouldStreamChat(req) {
+  const queryFlag = String(req.query.stream || '').toLowerCase() === 'true';
+  const acceptHeader = String(req.headers.accept || '').toLowerCase();
+  return queryFlag || acceptHeader.includes('text/event-stream');
+}
+
+function initSse(res) {
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+}
+
+function writeSseEvent(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 router.get('/health', strictReadLimiter, (req, res) => {
@@ -308,6 +330,92 @@ router.post('/sessions/:sessionId/chat', chatLimiter, validateSchema(chatBodySch
     sessionId,
     messageLength: message.length,
   });
+
+  if (shouldStreamChat(req)) {
+    initSse(res);
+    let clientDisconnected = false;
+    req.on('aborted', () => {
+      clientDisconnected = true;
+    });
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientDisconnected = true;
+      }
+    });
+
+    const emitEvent = (event, payload) => {
+      if (clientDisconnected || res.writableEnded) {
+        return;
+      }
+      writeSseEvent(res, event, payload);
+    };
+
+    emitEvent('ready', {
+      ok: true,
+      data: {
+        sessionId,
+        status: 'streaming',
+      },
+    });
+
+    try {
+      const response = await runChatQueryStream({
+        sessionId,
+        message,
+        history: normalizedHistory,
+      }, {
+        onProgress: ({ stage, progress }) => {
+          emitEvent('progress', {
+            ok: true,
+            data: { stage, progress },
+          });
+        },
+        onToken: (token) => {
+          emitEvent('token', {
+            ok: true,
+            data: { token },
+          });
+        },
+      });
+
+      if (!clientDisconnected) {
+        try {
+          addConversation({
+            sessionId,
+            userText: message,
+            assistantText: response.answer,
+          });
+        } catch (error) {
+          logError('ERROR_DB', error, {
+            route: '/api/v1/sessions/:sessionId/chat',
+            sessionId,
+            stage: 'streamPersistConversation',
+          });
+        }
+      }
+
+      emitEvent('done', {
+        ok: true,
+        data: {
+          answer: response.answer,
+          sources: response.sources,
+          usedChunksCount: response.usedChunksCount,
+          sessionTitle: session.title,
+        },
+      });
+    } catch (error) {
+      const normalized = normalizeHttpError(error);
+      emitEvent('error', {
+        ok: false,
+        error: normalized.error,
+      });
+    } finally {
+      if (!res.writableEnded) {
+        res.end();
+      }
+    }
+    return;
+  }
 
   if (shouldRunAsyncChat({ sessionId, history: normalizedHistory })) {
     const job = addJob({

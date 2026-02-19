@@ -1,4 +1,5 @@
 const app = require('./app');
+const { startCleanupWorker } = require('./services/cleanupService');
 const { logError, logInfo } = require('./utils/logger');
 
 const port = Number(process.env.PORT) || 4000;
@@ -17,5 +18,6 @@ process.on('uncaughtException', (error) => {
 });
 
 app.listen(port, host, () => {
+  startCleanupWorker();
   logInfo('SERVER_READY', { url: `http://${host}:${port}` });
 });

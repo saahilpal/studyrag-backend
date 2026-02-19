@@ -41,6 +41,16 @@ const selectJobByIdStmt = db.prepare(`
   WHERE id = ?
 `);
 
+const deleteCompletedJobsOlderThanStmt = db.prepare(`
+  DELETE FROM job_queue
+  WHERE status = 'completed' AND updatedAt < ?
+`);
+
+const deleteFailedJobsOlderThanStmt = db.prepare(`
+  DELETE FROM job_queue
+  WHERE status = 'failed' AND updatedAt < ?
+`);
+
 function persistJob(job, isNew = false) {
   const payload = {
     id: job.id,
@@ -416,6 +426,45 @@ function recoverJobsFromDatabase() {
   }
 }
 
+function cleanupJobs({ completedOlderThanMs, failedOlderThanMs }) {
+  const completedThreshold = new Date(Date.now() - Math.max(0, Number(completedOlderThanMs) || 0)).toISOString();
+  const failedThreshold = new Date(Date.now() - Math.max(0, Number(failedOlderThanMs) || 0)).toISOString();
+
+  const dbCleanupTx = db.transaction((completedTs, failedTs) => {
+    const completedResult = deleteCompletedJobsOlderThanStmt.run(completedTs);
+    const failedResult = deleteFailedJobsOlderThanStmt.run(failedTs);
+    return {
+      completedDeleted: Number(completedResult.changes) || 0,
+      failedDeleted: Number(failedResult.changes) || 0,
+    };
+  });
+
+  const dbDeleted = dbCleanupTx(completedThreshold, failedThreshold);
+
+  let memoryDeleted = 0;
+  for (const [jobId, job] of jobs.entries()) {
+    const updatedAt = Date.parse(job.updatedAt || job.createdAt || 0);
+    const shouldDeleteCompleted = job.status === 'completed' && updatedAt < Date.parse(completedThreshold);
+    const shouldDeleteFailed = job.status === 'failed' && updatedAt < Date.parse(failedThreshold);
+    if (!shouldDeleteCompleted && !shouldDeleteFailed) {
+      continue;
+    }
+    jobs.delete(jobId);
+    memoryDeleted += 1;
+  }
+
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    if (!jobs.has(queue[i])) {
+      queue.splice(i, 1);
+    }
+  }
+
+  return {
+    ...dbDeleted,
+    memoryDeleted,
+  };
+}
+
 recoverJobsFromDatabase();
 
 module.exports = {
@@ -423,4 +472,5 @@ module.exports = {
   getJob,
   getQueueState,
   getQueuePosition,
+  cleanupJobs,
 };

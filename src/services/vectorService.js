@@ -37,6 +37,17 @@ const selectRecentTextsBySessionStmt = db.prepare(`
   LIMIT ?
 `);
 
+const deleteOrphanChunksStmt = db.prepare(`
+  DELETE FROM chunks
+  WHERE NOT EXISTS (
+      SELECT 1 FROM sessions s WHERE s.id = chunks.sessionId
+    )
+    OR (
+      chunks.pdfId IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM pdfs p WHERE p.id = chunks.pdfId)
+    )
+`);
+
 function setPdfChunkCache(pdfId, chunkId, vector) {
   const normalizedPdfId = String(pdfId || 'unknown');
   let pdfCache = embeddingCacheByPdf.get(normalizedPdfId);
@@ -242,11 +253,20 @@ function invalidatePdfCache(pdfId) {
   embeddingCacheByPdf.delete(String(pdfId || 'unknown'));
 }
 
+function cleanupOrphanChunks() {
+  const result = deleteOrphanChunksStmt.run();
+  if ((Number(result.changes) || 0) > 0) {
+    embeddingCacheByPdf.clear();
+  }
+  return Number(result.changes) || 0;
+}
+
 module.exports = {
   addChunks,
   similaritySearch,
   getChunkCountBySession,
   getRecentContextTextsBySession,
   invalidatePdfCache,
+  cleanupOrphanChunks,
   cosineSimilarity,
 };
