@@ -1,27 +1,92 @@
 openapi: 3.0.3
 info:
-  title: Chat-First PDF Analyzer API
-  version: 1.0.0
+  title: Document Analyzer RAG API
+  version: 2.0.0
+  description: Session-based PDF ingestion and RAG chat backend.
 servers:
   - url: http://localhost:4000
+components:
+  schemas:
+    ErrorObject:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        retryable:
+          type: boolean
+    ErrorEnvelope:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+    SuccessEnvelope:
+      type: object
+      required: [ok, data]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        data:
+          type: object
+    JobState:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        stage:
+          type: string
+          enum: [uploading, parsing, chunking, embedding, retrieving, generating]
+        queuePosition:
+          type: integer
+          minimum: 0
+        attempts:
+          type: integer
+        result:
+          type: object
+          nullable: true
+        error:
+          oneOf:
+            - type: string
+            - $ref: '#/components/schemas/ErrorObject'
+          nullable: true
+        metrics:
+          type: object
+          nullable: true
 paths:
   /api/v1/health:
     get:
-      summary: Health check
+      summary: Health and runtime metrics
       responses:
         '200':
           description: OK
   /api/v1/ping:
     get:
-      summary: Ping
+      summary: Ping endpoint
       responses:
         '200':
-          description: Pong
+          description: OK
   /api/v1/sessions:
     get:
       summary: List sessions
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
     post:
       summary: Create session
       requestBody:
@@ -35,7 +100,10 @@ paths:
                 title:
                   type: string
       responses:
-        '200': { description: Created }
+        '200':
+          description: Created
+        '422':
+          description: Validation error
   /api/v1/sessions/{sessionId}:
     get:
       summary: Get session details
@@ -45,7 +113,8 @@ paths:
           required: true
           schema: { type: integer }
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
     delete:
       summary: Delete session
       parameters:
@@ -54,7 +123,8 @@ paths:
           required: true
           schema: { type: integer }
       responses:
-        '200': { description: Deleted }
+        '200':
+          description: Deleted
   /api/v1/sessions/{sessionId}/pdfs:
     get:
       summary: List PDFs by session
@@ -64,9 +134,10 @@ paths:
           required: true
           schema: { type: integer }
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
     post:
-      summary: Upload PDF for session
+      summary: Upload PDF for session and enqueue indexing
       parameters:
         - in: path
           name: sessionId
@@ -85,7 +156,8 @@ paths:
                 title:
                   type: string
       responses:
-        '202': { description: Accepted }
+        '202':
+          description: Accepted
   /api/v1/pdfs/{pdfId}:
     get:
       summary: Get PDF metadata
@@ -95,9 +167,10 @@ paths:
           required: true
           schema: { type: integer }
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
     delete:
-      summary: Delete PDF metadata and optionally file
+      summary: Delete PDF metadata and optionally stored file
       parameters:
         - in: path
           name: pdfId
@@ -107,15 +180,21 @@ paths:
           name: removeFile
           schema: { type: boolean }
       responses:
-        '200': { description: Deleted }
+        '200':
+          description: Deleted
   /api/v1/sessions/{sessionId}/chat:
     post:
-      summary: Chat query against indexed PDFs
+      summary: Run chat query against indexed session documents
       parameters:
         - in: path
           name: sessionId
           required: true
           schema: { type: integer }
+        - in: query
+          name: stream
+          schema:
+            type: boolean
+          description: Enable SSE token streaming
       requestBody:
         required: true
         content:
@@ -137,27 +216,17 @@ paths:
                       text:
                         type: string
       responses:
-        '200': { description: Chat answer }
-        '202': { description: Async job accepted }
-  /api/v1/sessions/{sessionId}/history:
-    get:
-      summary: Get chat history
-      parameters:
-        - in: path
-          name: sessionId
-          required: true
-          schema: { type: integer }
-      responses:
-        '200': { description: OK }
-    delete:
-      summary: Clear chat history
-      parameters:
-        - in: path
-          name: sessionId
-          required: true
-          schema: { type: integer }
-      responses:
-        '200': { description: Cleared }
+        '200':
+          description: Chat answer or SSE stream response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessEnvelope'
+            text/event-stream:
+              schema:
+                type: string
+        '202':
+          description: Async job accepted
   /api/v1/jobs/{jobId}:
     get:
       summary: Poll async job status
@@ -167,9 +236,53 @@ paths:
           required: true
           schema: { type: string }
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/JobState'
+  /api/v1/sessions/{sessionId}/history:
+    get:
+      summary: Get chat history
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: limit
+          schema: { type: integer }
+        - in: query
+          name: offset
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+    delete:
+      summary: Clear session history
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Cleared
   /api/v1/admin/queue:
     get:
-      summary: Queue status and metrics (dev)
+      summary: Queue/metrics overview (non-production)
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+  /api/v1/admin/reset:
+    post:
+      summary: Reset upload directory (non-production)
+      responses:
+        '200':
+          description: OK
