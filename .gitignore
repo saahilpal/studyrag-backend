@@ -1,19 +1,33 @@
 node_modules/
+
+# Environment files
 .env
-logs/
-dist/
-.tmp
-uploads/tmp/
+.env.*
+!.env.example
+
+# Runtime/generated data
 data/
-data/uploads/tmp/
+uploads/
+tmp/
+.tmp/
 *.tmp
 *.temp
 *.cache
+.cache/
 
+# Build and reports
+build/
+dist/
+coverage/
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Editor and OS files
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
