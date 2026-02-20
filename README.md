@@ -1,281 +1,219 @@
 # Document Analyzer RAG Backend
 
-## 1. Project Overview
-Document Analyzer RAG Backend is a production-focused Node.js service for session-based PDF ingestion, semantic indexing, and retrieval-augmented chat.
+Production-oriented backend for session-based PDF ingestion, vector retrieval, and Gemini-powered chat generation over indexed documents.
 
-Core stack:
-- Node.js + Express
-- SQLite (`better-sqlite3`)
-- Local embeddings (`@xenova/transformers`)
-- Gemini generation (`@google/genai`)
-- Background job queue with persistence
+## Overview
+This service provides a local-first Retrieval Augmented Generation (RAG) backend designed for document analysis workflows.
 
-API base:
-- `/api/v1`
+It supports:
+- Session lifecycle management
+- PDF upload and asynchronous indexing
+- Local embedding generation and SQLite vector persistence
+- Similarity retrieval across indexed chunks
+- Synchronous and streaming chat responses
+- Persistent job tracking with polling
 
-Response envelope:
-- Success: `{ "ok": true, "data": ... }`
-- Error: `{ "ok": false, "error": { code, message, retryable } }`
+## Architecture
+The backend is organized as a layered Node.js service:
 
----
+- API layer: Express routes under `/api/v1`
+- Domain services: upload, indexing, retrieval, chat, queue, metrics, cleanup
+- Persistence: SQLite (`better-sqlite3`) for sessions, documents, vectors, jobs, and chat history
+- AI integrations:
+  - Local embeddings via `@xenova/transformers`
+  - Generation via Gemini (`@google/genai`)
 
-## 2. Architecture Diagram
-```text
-Client
-  |
-  | HTTP / SSE
-  v
-Express App (src/app.js)
-  |- security middleware (helmet, cors, json limits)
-  |- route-level rate limits + schema validation
-  v
-API Router (src/routes/apiV1.js)
-  |- sessions / pdfs / chat / jobs / admin
-  |- streaming chat (SSE)
-  v
-Services Layer (src/services/*)
-  |- uploadService      (temp-file pipeline, file validation)
-  |- indexingService    (parse -> chunk -> embed -> store)
-  |- vectorService      (full-corpus paged similarity search)
-  |- ragService         (retrieve + Gemini generate/stream)
-  |- jobQueue           (persistent queue, retries, progress)
-  |- cleanupService     (stale jobs/temp/orphan cleanup)
-  v
-SQLite (data/studyrag.sqlite)
-  |- sessions, pdfs, chunks, chat_messages, job_queue
+Data flow:
 
-Filesystem (data/uploads)
-  |- per-session PDFs
-  |- temp upload directory
-```
+1. `POST /sessions/:id/pdfs` receives upload and creates an indexing job.
+2. Worker parses PDF, chunks text, embeds vectors, stores chunks.
+3. `POST /sessions/:id/chat` retrieves top candidates, builds prompt, and generates answer.
+4. Responses are returned as JSON or SSE stream (when requested).
 
----
+## Features
+- Versioned API base: `/api/v1`
+- Response envelope contract:
+  - Success: `{ ok: true, data: ... }`
+  - Error: `{ ok: false, error: { code, message, retryable } }`
+- Upload size guardrails (default 50MB)
+- Request payload limits (JSON/urlencoded 2MB)
+- Job queue with progress/stage/queue position
+- SSE token streaming for chat
+- Session chat history persistence
+- Periodic cleanup worker for stale jobs/temp artifacts
+- Route-level rate limiting and schema validation
 
-## 3. API Documentation
+## API Overview
+Endpoint groups:
 
-### Health & Utility
-- `GET /api/v1/health`
-  - Returns status, uptime, queue size, memory usage, and CPU load
-- `GET /api/v1/ping`
+- Health
+  - `GET /api/v1/health`
+  - `GET /api/v1/ping`
+- Sessions
+  - `GET /api/v1/sessions`
+  - `POST /api/v1/sessions`
+  - `GET /api/v1/sessions/:sessionId`
+  - `DELETE /api/v1/sessions/:sessionId`
+- PDFs
+  - `GET /api/v1/sessions/:sessionId/pdfs`
+  - `POST /api/v1/sessions/:sessionId/pdfs`
+  - `GET /api/v1/pdfs/:pdfId`
+  - `DELETE /api/v1/pdfs/:pdfId`
+- Chat
+  - `POST /api/v1/sessions/:sessionId/chat`
+- Jobs
+  - `GET /api/v1/jobs/:jobId`
+- History
+  - `GET /api/v1/sessions/:sessionId/history`
+  - `DELETE /api/v1/sessions/:sessionId/history`
+- Admin (disabled in production)
+  - `GET /api/v1/admin/queue`
+  - `POST /api/v1/admin/reset`
 
-### Sessions
-- `GET /api/v1/sessions`
-- `POST /api/v1/sessions`
-  - Body: `{ "title": "..." }`
-- `GET /api/v1/sessions/:sessionId`
-- `DELETE /api/v1/sessions/:sessionId`
+Full schema reference: `openapi.yaml`
 
-### PDFs
-- `GET /api/v1/sessions/:sessionId/pdfs`
-- `POST /api/v1/sessions/:sessionId/pdfs` (multipart)
-  - Fields:
-    - `file` (PDF)
-    - `title` (optional)
-  - Returns job metadata including progress and queue position
-- `GET /api/v1/pdfs/:pdfId`
-- `DELETE /api/v1/pdfs/:pdfId?removeFile=true|false`
+## Tech Stack
+- Runtime: Node.js (CommonJS)
+- Web framework: Express
+- Database: SQLite (`better-sqlite3`)
+- File processing: `multer`, `pdf-parse`
+- Embeddings: `@xenova/transformers`
+- LLM generation: `@google/genai` (Gemini)
+- Validation: `zod`
+- Security middleware: `helmet`, `cors`, rate limiter
+- Testing: Node test runner, `supertest`, `pdfkit`
 
-### Chat
-- `POST /api/v1/sessions/:sessionId/chat`
-  - JSON mode (default): returns full response
-  - Streaming mode (SSE): `?stream=true` or `Accept: text/event-stream`
+## Setup
+1. Install dependencies:
 
-### Jobs
-- `GET /api/v1/jobs/:jobId`
-  - Includes `progress`, `stage`, `queuePosition`, retries, and result/error
-
-### History
-- `GET /api/v1/sessions/:sessionId/history?limit=...&offset=...`
-- `DELETE /api/v1/sessions/:sessionId/history`
-
-### Admin (non-production only)
-- `GET /api/v1/admin/queue`
-- `POST /api/v1/admin/reset`
-
----
-
-## 4. Setup Instructions
-
-### Prerequisites
-- Node.js 20+
-- npm
-
-### Install
 ```bash
 npm install
 ```
 
-### Configure
+2. Create local environment file:
+
 ```bash
 cp .env.example .env
 ```
-Set required values (especially `GEMINI_API_KEY`).
 
-### Run
+3. Configure required variables (at minimum `GEMINI_API_KEY`).
+
+4. Run database migrations:
+
+```bash
+npm run migrate
+```
+
+5. Start the service:
+
 ```bash
 npm run dev
-# or
-npm start
 ```
 
-### Run migrations manually
+## Environment Variables
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PORT` | No | `4000` | HTTP port |
+| `HOST` | No | `0.0.0.0` | Bind address |
+| `NODE_ENV` | No | `development` | Runtime mode |
+| `TRUST_PROXY` | No | `false` | Express proxy trust |
+| `GEMINI_API_KEY` | Yes | - | Gemini API key |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Comma-separated model candidates |
+| `CORS_ALLOWED_ORIGINS` | No | `http://localhost:3000,http://127.0.0.1:3000` | Allowed origins |
+| `MAX_UPLOAD_FILE_SIZE_BYTES` | No | `52428800` | Upload size cap |
+| `RAG_TOP_K` | No | `5` | Retrieval top-k |
+| `RAG_CANDIDATE_PAGE_SIZE` | No | `400` | Candidate scan page size |
+| `RAG_HISTORY_LIMIT` | No | `12` | Prompt history cap |
+| `RAG_TOKEN_TO_CHAR_RATIO` | No | `4` | Chunking ratio |
+| `RAG_CHUNK_TOKENS` | No | `1000` | Chunk token target |
+| `RAG_CHUNK_OVERLAP_TOKENS` | No | `200` | Chunk overlap |
+| `LOCAL_EMBEDDING_BATCH_SIZE` | No | `24` | Embedding batch size |
+| `LOCAL_EMBEDDING_BATCH_SIZE_MIN` | No | `8` | Min adaptive batch |
+| `LOCAL_EMBEDDING_BATCH_SIZE_MAX` | No | `64` | Max adaptive batch |
+| `CLEANUP_INTERVAL_MS` | No | `900000` | Cleanup scheduler interval |
+| `CLEANUP_COMPLETED_JOB_TTL_HOURS` | No | `24` | Completed job retention |
+| `CLEANUP_FAILED_JOB_TTL_HOURS` | No | `72` | Failed job retention |
+| `CLEANUP_TEMP_FILE_TTL_HOURS` | No | `6` | Temp file retention |
+
+## Project Structure
+```text
+.
+├── docs/
+├── scripts/
+├── src/
+│   ├── app.js
+│   ├── server.js
+│   ├── config/
+│   ├── db/
+│   ├── middleware/
+│   ├── routes/
+│   ├── services/
+│   └── utils/
+├── tests/
+├── .env.example
+├── openapi.yaml
+├── package.json
+└── README.md
+```
+
+## Development
+Run locally:
+
 ```bash
-node migrate.js --dry-run
-node migrate.js
+npm run dev
 ```
 
-### Run tests
+Run tests:
+
 ```bash
 npm test
 ```
 
----
+Run integration-only tests:
 
-## 5. Environment Variables
-
-### Core
-- `PORT` (default `4000`)
-- `HOST` (default `0.0.0.0`)
-- `NODE_ENV` (`development` or `production`)
-- `GEMINI_API_KEY` (required for Gemini responses)
-- `GEMINI_MODEL` (comma-separated model candidates)
-
-### Security & HTTP
-- `CORS_ALLOWED_ORIGINS` (comma-separated exact origins)
-- `TRUST_PROXY` (`true|false`)
-- `MAX_UPLOAD_FILE_SIZE_BYTES` (default `52428800`)
-
-### RAG / Retrieval
-- `RAG_TOP_K` (default `5`)
-- `RAG_CANDIDATE_PAGE_SIZE` (default `400`)
-- `RAG_HISTORY_LIMIT` (default `12`)
-- `RAG_TOKEN_TO_CHAR_RATIO` (default `4`)
-- `RAG_CHUNK_TOKENS` (default `1000`)
-- `RAG_CHUNK_OVERLAP_TOKENS` (default `200`)
-
-### Local Embeddings
-- `LOCAL_EMBEDDING_BATCH_SIZE` (default `24`)
-- `LOCAL_EMBEDDING_BATCH_SIZE_MIN` (default `8`)
-- `LOCAL_EMBEDDING_BATCH_SIZE_MAX` (default `64`)
-
-### Cleanup Worker
-- `CLEANUP_INTERVAL_MS` (default `900000`)
-- `CLEANUP_COMPLETED_JOB_TTL_HOURS` (default `24`)
-- `CLEANUP_FAILED_JOB_TTL_HOURS` (default `72`)
-- `CLEANUP_TEMP_FILE_TTL_HOURS` (default `6`)
-
----
-
-## 6. Job System Explanation
-The queue is single-worker and persisted to SQLite (`job_queue`) for recovery after restart.
-
-Supported job types:
-- `indexPdf`
-- `chatQuery`
-
-Job lifecycle:
-- `queued -> processing -> completed|failed`
-
-Queue features:
-- Retry with exponential backoff
-- Live progress fields:
-  - `progress` (0–100)
-  - `stage` (`uploading|parsing|chunking|embedding|retrieving|generating`)
-- Queue visibility:
-  - `queuePosition` from `/api/v1/jobs/:jobId`
-
----
-
-## 7. RAG Pipeline Explanation
-Pipeline:
-1. Upload PDF to temp disk path
-2. Validate MIME, extension, and PDF signature
-3. Move to permanent session storage
-4. Parse text (`pdf-parse`)
-5. Chunk text with overlap
-6. Generate local embeddings (MiniLM)
-7. Store chunks and vectors in SQLite
-8. Retrieve relevant chunks using full-corpus paged similarity search
-9. Generate answer with Gemini
-10. Persist conversation history
-
-Idempotency:
-- Re-index replaces previous chunks for the same PDF (`replacePdfChunks`) and uses deterministic chunk keys.
-
----
-
-## 8. Streaming Usage (SSE)
-Enable streaming on chat:
-- Add query param `stream=true`
-- Or set header `Accept: text/event-stream`
-
-Example:
 ```bash
-curl -N -X POST "http://127.0.0.1:4000/api/v1/sessions/1/chat?stream=true" \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"message":"Summarize the document."}'
+npm run test:integration
 ```
 
-SSE events:
-- `ready`
-- `progress`
-- `token`
-- `done`
-- `error`
+Run migration dry-run:
 
-The final assistant message is stored only after successful stream completion.
-
----
-
-## 9. Error Format Specification
-All non-2xx responses use:
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "PDF_NOT_READY",
-    "message": "Documents still processing or failed indexing.",
-    "retryable": true
-  }
-}
+```bash
+npm run migrate:dry-run
 ```
 
-Notes:
-- `code`: stable machine-readable identifier
-- `message`: human-readable explanation
-- `retryable`: client can retry later
+## Production Deployment
+1. Set `NODE_ENV=production`.
+2. Provide secure values for required environment variables.
+3. Run migrations before serving traffic.
+4. Start with:
 
----
+```bash
+npm start
+```
 
-## 10. Performance Notes
-Implemented optimizations:
-- Uploads are disk-streamed (no large in-memory file buffering)
-- Full-corpus retrieval is paged and yields to the event loop between pages
-- Similarity search filters by embedding vector length
-- Embedding generation uses adaptive batching
-- Queue state is persisted and recoverable on restart
+5. Place the process behind a reverse proxy and enable `TRUST_PROXY=true` when required.
+6. Restrict access to admin endpoints (`/api/v1/admin/*`) in production environments.
 
-Operational guidance:
-- SQLite is synchronous and can block under high concurrency
-- For high throughput, consider external queue + vector DB + worker scaling
+## Performance Notes
+- `better-sqlite3` is synchronous; high concurrency can block the event loop.
+- Retrieval performs paged full-corpus similarity scanning per session.
+- Embedding batches are adaptive to reduce memory spikes.
+- Uploads are disk-backed (temp-to-storage) to avoid large in-memory buffers.
+- SSE streaming keeps chat responsive for long completions.
 
----
+## Security Notes
+- No built-in authentication/authorization is currently enforced.
+- CORS is allowlisted via environment configuration.
+- Requests and payloads are size-limited and schema-validated.
+- Upload validation includes MIME, extension, and PDF signature checks.
+- Keep `.env` local; it is ignored by git.
 
-## 11. Known Limitations
-- SQLite and `better-sqlite3` are not ideal for very high write/query concurrency
-- No authentication/authorization yet
-- Single-process queue worker (no distributed coordination)
-- In-process rate limiting (not shared across instances)
-- SSE streaming is one-way; no client-driven cancellation API yet
+## Roadmap
+- Add authentication and tenant isolation
+- Replace in-memory limiter with distributed rate limiting
+- Add worker-thread or external worker offload for vector scoring
+- Introduce horizontal queue/worker scaling
+- Improve observability (metrics, traces, alerts)
 
----
-
-## 12. Future Roadmap
-- Add authN/authZ and tenant isolation
-- Introduce distributed queue (Redis/BullMQ or equivalent)
-- Move vector search to ANN/vector database backend
-- Add worker-thread or external worker offload for similarity scoring
-- Add observability stack (traces, metrics, alerting)
-- Add document-type expansion beyond PDF
-- Add WebSocket bidirectional streaming option
+## License
+ISC
